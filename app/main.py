@@ -1,166 +1,140 @@
+import os
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
-from app.db import get_connection, init_db, seed_db
+from app import db
 
-app = FastAPI(
-    title="Coolify CRUD Demo",
-    description="App de prueba con CRUD básico para validar GitHub → Coolify → Docker → PostgreSQL nativo.",
-    version="1.0.0",
-)
+APP_TITLE = os.getenv("APP_TITLE", "Therian CRUD Demo")
+
+app = FastAPI(title=APP_TITLE)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+templates = Jinja2Templates(directory="app/templates")
 
 
 class NoteCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
+    title: str
     content: Optional[str] = None
-
-
-class NoteUpdate(BaseModel):
-    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    content: Optional[str] = None
+    status: str = "pending"
 
 
 @app.on_event("startup")
-def startup():
-    init_db()
-    seed_db()
+def startup() -> None:
+    db.init_db()
+    db.seed_db()
 
 
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "app": "Coolify CRUD Demo",
-        "message": "App corriendo en Docker y conectada a PostgreSQL nativo",
-        "docs": "/docs",
-    }
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request):
+    notes = db.list_notes()
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "notes": notes,
+            "editing_note": None,
+            "db_host": os.getenv("DB_HOST", ""),
+            "db_name": os.getenv("DB_NAME", ""),
+            "db_user": os.getenv("DB_USER", ""),
+        },
+    )
+
+
+@app.get("/edit/{note_id}", response_class=HTMLResponse)
+def edit_page(request: Request, note_id: int):
+    note = db.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    notes = db.list_notes()
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "title": APP_TITLE,
+            "notes": notes,
+            "editing_note": note,
+            "db_host": os.getenv("DB_HOST", ""),
+            "db_name": os.getenv("DB_NAME", ""),
+            "db_user": os.getenv("DB_USER", ""),
+        },
+    )
+
+
+@app.post("/web/notes")
+def web_create_note(
+    title: str = Form(...),
+    content: str = Form(""),
+    status: str = Form("pending"),
+):
+    db.create_note(title=title, content=content, status=status)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/web/notes/{note_id}/update")
+def web_update_note(
+    note_id: int,
+    title: str = Form(...),
+    content: str = Form(""),
+    status: str = Form("pending"),
+):
+    updated = db.update_note(note_id=note_id, title=title, content=content, status=status)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/web/notes/{note_id}/delete")
+def web_delete_note(note_id: int):
+    db.delete_note(note_id)
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.get("/db-check")
 def db_check():
     try:
-        with get_connection() as conn:
+        with db.get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT current_database(), current_user, now();")
+                cur.execute("SELECT current_database(), current_user, inet_server_addr(), inet_server_port();")
                 result = cur.fetchone()
-        return {"status": "ok", "database": result}
+        return {"status": "ok", **result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/notes")
-def list_notes():
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, title, content, created_at, updated_at
-                    FROM notes
-                    ORDER BY id;
-                    """
-                )
-                rows = cur.fetchall()
-        return {"status": "ok", "count": len(rows), "notes": rows}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.get("/api/notes")
+def api_list_notes():
+    return {"status": "ok", "notes": db.list_notes()}
 
 
-@app.get("/notes/{note_id}")
-def get_note(note_id: int):
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, title, content, created_at, updated_at
-                    FROM notes
-                    WHERE id = %s;
-                    """,
-                    (note_id,),
-                )
-                row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Note not found")
-        return {"status": "ok", "note": row}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.get("/api/notes/{note_id}")
+def api_get_note(note_id: int):
+    note = db.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return {"status": "ok", "note": note}
 
 
-@app.post("/notes", status_code=status.HTTP_201_CREATED)
-def create_note(note: NoteCreate):
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO notes (title, content)
-                    VALUES (%s, %s)
-                    RETURNING id, title, content, created_at, updated_at;
-                    """,
-                    (note.title, note.content),
-                )
-                row = cur.fetchone()
-                conn.commit()
-        return {"status": "created", "note": row}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.post("/api/notes")
+def api_create_note(note: NoteCreate):
+    return {"status": "created", "note": db.create_note(note.title, note.content, note.status)}
 
 
-@app.put("/notes/{note_id}")
-def update_note(note_id: int, note: NoteUpdate):
-    if note.title is None and note.content is None:
-        raise HTTPException(status_code=400, detail="Nothing to update")
-
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE notes
-                    SET
-                        title = COALESCE(%s, title),
-                        content = COALESCE(%s, content),
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = %s
-                    RETURNING id, title, content, created_at, updated_at;
-                    """,
-                    (note.title, note.content, note_id),
-                )
-                row = cur.fetchone()
-                conn.commit()
-        if not row:
-            raise HTTPException(status_code=404, detail="Note not found")
-        return {"status": "updated", "note": row}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.put("/api/notes/{note_id}")
+def api_update_note(note_id: int, note: NoteCreate):
+    updated = db.update_note(note_id, note.title, note.content, note.status)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return {"status": "updated", "note": updated}
 
 
-@app.delete("/notes/{note_id}")
-def delete_note(note_id: int):
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    DELETE FROM notes
-                    WHERE id = %s
-                    RETURNING id, title, content, created_at, updated_at;
-                    """,
-                    (note_id,),
-                )
-                row = cur.fetchone()
-                conn.commit()
-        if not row:
-            raise HTTPException(status_code=404, detail="Note not found")
-        return {"status": "deleted", "note": row}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.delete("/api/notes/{note_id}")
+def api_delete_note(note_id: int):
+    deleted = db.delete_note(note_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return {"status": "deleted", "id": note_id}

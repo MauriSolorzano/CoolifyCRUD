@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>{{ title }}</h1>
+      <p>Demo web CRUD: FastAPI + Docker + Coolify + PostgreSQL nativo</p>
+    </div>
+    <nav>
+      <a href="/">Inicio</a>
+      <a href="/db-check">DB check</a>
+      <a href="/docs">API docs</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="panel status-panel">
+      <h2>Estado de conexión</h2>
+      <div class="status-grid">
+        <div><span>DB_HOST</span><strong>{{ db_host }}</strong></div>
+        <div><span>DB_NAME</span><strong>{{ db_name }}</strong></div>
+        <div><span>DB_USER</span><strong>{{ db_user }}</strong></div>
+      </div>
+      <p class="hint">Abrí <a href="/db-check">/db-check</a> para validar que la app dockerizada conecta a PostgreSQL.</p>
+    </section>
+
+    <section class="layout">
+      <aside class="panel form-panel">
+        {% if editing_note %}
+          <h2>Editar nota #{{ editing_note.id }}</h2>
+          <form method="post" action="/web/notes/{{ editing_note.id }}/update">
+        {% else %}
+          <h2>Nueva nota</h2>
+          <form method="post" action="/web/notes">
+        {% endif %}
+          <label>Título</label>
+          <input name="title" required maxlength="200" value="{{ editing_note.title if editing_note else '' }}">
+
+          <label>Contenido</label>
+          <textarea name="content" rows="6">{{ editing_note.content if editing_note else '' }}</textarea>
+
+          <label>Estado</label>
+          <select name="status">
+            {% set current_status = editing_note.status if editing_note else 'pending' %}
+            <option value="pending" {% if current_status == 'pending' %}selected{% endif %}>Pendiente</option>
+            <option value="in_progress" {% if current_status == 'in_progress' %}selected{% endif %}>En progreso</option>
+            <option value="done" {% if current_status == 'done' %}selected{% endif %}>Completado</option>
+          </select>
+
+          <button type="submit" class="primary">
+            {{ 'Guardar cambios' if editing_note else 'Crear nota' }}
+          </button>
+          {% if editing_note %}
+            <a class="secondary" href="/">Cancelar edición</a>
+          {% endif %}
+        </form>
+      </aside>
+
+      <section class="panel list-panel">
+        <div class="list-header">
+          <h2>Notas en PostgreSQL</h2>
+          <span>{{ notes|length }} registros</span>
+        </div>
+
+        {% if notes %}
+          <div class="cards">
+            {% for note in notes %}
+              <article class="card">
+                <div class="card-head">
+                  <h3>{{ note.title }}</h3>
+                  <span class="badge {{ note.status }}">{{ note.status }}</span>
+                </div>
+                <p>{{ note.content or 'Sin contenido' }}</p>
+                <div class="meta">
+                  <span>ID: {{ note.id }}</span>
+                  <span>Creado: {{ note.created_at }}</span>
+                </div>
+                <div class="actions">
+                  <a href="/edit/{{ note.id }}" class="secondary">Editar</a>
+                  <form method="post" action="/web/notes/{{ note.id }}/delete" onsubmit="return confirm('¿Borrar esta nota?');">
+                    <button type="submit" class="danger">Borrar</button>
+                  </form>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p>No hay notas. Creá la primera desde el formulario.</p>
+        {% endif %}
+      </section>
+    </section>
+  </main>
+</body>
+</html>
